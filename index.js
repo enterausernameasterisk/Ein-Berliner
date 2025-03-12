@@ -1270,7 +1270,7 @@ const CommandHandler = {
           value: '**🤔 How can I trust you?**\n' +
                  '[I’m EV approved!](https://media.discordapp.net/attachments/1345418675418693703/1346590215325618216/image.png?ex=67d1f7dd&is=67d0a65d&hm=3749aef1eccf0931336d26cb42ede8e12b3925b25bf1a523cd6f7b03760c1060&=&format=webp&quality=lossless&width=454&height=371)\n\n' +
                  '**📃 What do you log?**\n' +
-                 'I take security and privacy seriously, we only log the essentials, **nothing that could ever reveal who our users are**, \n\n' +
+                 'I take security and privacy seriously, we only log the essentials, **nothing that could ever reveal who our users are**. \n\n' +
                  '**👾 Who created you?**\n' +
                  'I was created by [Sina](https://discord.com/users/751648406363176960), source is available on [GitHub](https://github.com/enterausernameasterisk/Ein-Berliner).\n\n' +
                  '**💭 Why?**\n' +
