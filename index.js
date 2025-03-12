@@ -118,7 +118,6 @@ async function retryableRequest(requestFn, maxRetries = CONFIG.RETRY_ATTEMPTS) {
       }
       
       if (attempt < maxRetries) {
-        Logger.error(`Request failed (${error.message}), retrying in ${backoffDelay}ms (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, backoffDelay));
       }
     }
@@ -209,29 +208,30 @@ const RobloxService = {
     }
   },
 
-  async getUserInfoById(userId) {
-    const cacheKey = `userId:${userId}`;
-    const cachedData = state.getCachedItem(cacheKey);
-    if (cachedData) return cachedData;
+    async getUserInfoById(userId) {
+      const cacheKey = `userId:${userId}`;
+      const cachedData = state.getCachedItem(cacheKey);
+      if (cachedData) return cachedData;
 
-    try {
-      const { data: userDetails } = await retryableRequest(() => 
-        robloxUsersApi.get(`/users/${userId}`)
-      );
-      
-      const result = {
-        userId,
-        username: userDetails.name,
-        displayName: userDetails.displayName,
-        description: userDetails.description,
-        created: userDetails.created,
-      };
-      
-      state.setCachedItem(cacheKey, result);
-      return result;
-    } catch (error) {
-      throw new Error(`Failed to fetch user info by ID: ${error.message}`);
-    }
+      try {
+          const { data: userDetails } = await retryableRequest(() => 
+              robloxUsersApi.get(`/users/${userId}`)
+          );
+          
+          const result = {
+              userId,
+              username: userDetails.name || `Unknown_${userId}`,
+              displayName: userDetails.displayName || '',
+              description: userDetails.description,
+              created: userDetails.created,
+          };
+          
+          state.setCachedItem(cacheKey, result);
+          return result;
+      } catch (error) {
+          Logger.error(`Failed to fetch user info by ID ${userId}: ${error.message}`);
+          return { userId, username: `Unknown_${userId}`, displayName: '' };
+      }
   },
 
   async getUserGroups(userId) {
@@ -294,98 +294,108 @@ const RobloxService = {
     }
   },
 
-  async getUserFriends(userId) {
-    const cacheKey = `friends:${userId}`;
-    const cachedData = state.getCachedItem(cacheKey);
-    if (cachedData) return cachedData;
+    async getUserFriends(userId) {
+      const cacheKey = `friends:${userId}`;
+      const cachedData = state.getCachedItem(cacheKey);
+      if (cachedData) return cachedData;
 
-    try {
-      const { data } = await retryableRequest(() => 
-        robloxFriendsApi.get(`/users/${userId}/friends`)
-      );
-      
-      const friendCount = data.data.length;
-      let maxFriendsToProcess = CONFIG.MAX_FRIENDS_TO_PROCESS;
-      
-      if (friendCount > 200) {
-        maxFriendsToProcess = Math.min(30, maxFriendsToProcess);
-        Logger.warn(`${userId} has ${friendCount} friends - limiting to ${maxFriendsToProcess}`);
-      } else if (friendCount > 100) {
-        maxFriendsToProcess = Math.min(40, maxFriendsToProcess);
-      }
-      
-      const friends = data.data.slice(0, maxFriendsToProcess);
-      
-      const timeoutDuration = friendCount > 150 ? 
-        CONFIG.FRIEND_PROCESSING_TIMEOUT / 2 : 
-        CONFIG.FRIEND_PROCESSING_TIMEOUT;
-      
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Friend processing timeout - profile too large')), timeoutDuration);
-      });
-      
-      const processFriendsPromise = (async () => {
-        const batchSize = 3;
-        const result = [];
-        
-        for (let i = 0; i < friends.length; i += batchSize) {
-          const batch = friends.slice(i, i + batchSize);
-          const batchPromises = batch.map(async (friend) => {
-            try {
-              const groupsToCheck = friendCount > 200 ? 
-                CONFIG.NOTABLE_GROUP_IDS.slice(0, 20) : 
-                CONFIG.NOTABLE_GROUP_IDS;
-                
-              const groups = await this.getUserGroupMemberships(friend.id, groupsToCheck);
-              if (groups.length) {
-                return { 
-                  id: friend.id, 
-                  username: friend.name, 
-                  displayName: friend.displayName, 
-                  isOnline: friend.isOnline, 
-                  groups 
-                };
-              }
-              return null;
-            } catch (error) {
-              Logger.error(`Couldn't process ${friend.id}: ${error.message}`);
-              return null;
-            }
+      try {
+          const { data } = await retryableRequest(() => 
+              robloxFriendsApi.get(`/users/${userId}/friends`)
+          );
+          
+          const friendCount = data.data.length;
+          let maxFriendsToProcess = CONFIG.MAX_FRIENDS_TO_PROCESS;
+          
+          if (friendCount > 200) {
+              maxFriendsToProcess = Math.min(30, maxFriendsToProcess);
+              Logger.warn(`${userId} has ${friendCount} friends - limiting to ${maxFriendsToProcess}`);
+          } else if (friendCount > 100) {
+              maxFriendsToProcess = Math.min(40, maxFriendsToProcess);
+          }
+          
+          const friends = data.data.slice(0, maxFriendsToProcess);
+          
+          const userIds = friends.map(f => f.id);
+          const { data: userData } = await retryableRequest(() => 
+              robloxUsersApi.post('/users', { userIds, excludeBannedUsers: true })
+          );
+          
+          const userMap = new Map(userData.data.map(u => [u.id, { username: u.name, displayName: u.displayName }]));
+          
+          const timeoutDuration = friendCount > 150 ? 
+              CONFIG.FRIEND_PROCESSING_TIMEOUT / 2 : 
+              CONFIG.FRIEND_PROCESSING_TIMEOUT;
+          
+          const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('Friend processing timeout - profile too large')), timeoutDuration);
           });
           
+          const processFriendsPromise = (async () => {
+              const batchSize = 3;
+              const result = [];
+              
+              for (let i = 0; i < friends.length; i += batchSize) {
+                  const batch = friends.slice(i, i + batchSize);
+                  const batchPromises = batch.map(async (friend) => {
+                      try {
+                          const groupsToCheck = friendCount > 200 ? 
+                              CONFIG.NOTABLE_GROUP_IDS.slice(0, 20) : 
+                              CONFIG.NOTABLE_GROUP_IDS;
+                              
+                          const groups = await this.getUserGroupMemberships(friend.id, groupsToCheck);
+                          if (groups.length) {
+                              const userInfo = userMap.get(friend.id) || { username: `Unknown_${friend.id}`, displayName: '' };
+                              
+                              const friendData = { 
+                                  id: friend.id, 
+                                  username: userInfo.username,
+                                  displayName: userInfo.displayName,
+                                  isOnline: friend.isOnline || false, 
+                                  groups 
+                              };
+                              return friendData;
+                          }
+                          return null;
+                      } catch (error) {
+                          Logger.error(`Couldn't process ${friend.id}: ${error.message}`);
+                          return null;
+                      }
+                  });
+                  
+                  try {
+                      const batchResults = await Promise.all(batchPromises);
+                      result.push(...batchResults.filter(Boolean));
+                      
+                      if (result.length >= 10 && friendCount > 150 && i >= friends.length / 2) {
+                          Logger.warn(`Got ${result.length} friends - returning early, since Discord sucks.`);
+                          break;
+                      }
+                  } catch (error) {
+                      Logger.error(`Couldn't process batch: ${error.message}`);
+                  }
+              }
+              
+              return result;
+          })();
+          
+          let result;
           try {
-            const batchResults = await Promise.all(batchPromises);
-            result.push(...batchResults.filter(Boolean));
-            
-            if (result.length >= 10 && friendCount > 150 && i >= friends.length / 2) {
-              Logger.warn(`Got ${result.length} results - returning early for large profile`);
-              break;
-            }
+              result = await Promise.race([processFriendsPromise, timeoutPromise]);
           } catch (error) {
-            Logger.error(`Couldn't process batch: ${error.message}`);
+              Logger.warn(`Friend processing warning: ${error.message}`);
+              result = await processFriendsPromise.catch(e => {
+                  Logger.error(`Error retrieving partial results: ${e.message}`);
+                  return [];
+              });
           }
-        }
-        
-        return result;
-      })();
-      
-      let result;
-      try {
-        result = await Promise.race([processFriendsPromise, timeoutPromise]);
+          
+          state.setCachedItem(cacheKey, result);
+          return result;
       } catch (error) {
-        Logger.warn(`Friend processing warning: ${error.message}`);
-        result = await processFriendsPromise.catch(e => {
-          Logger.error(`Error retrieving partial results: ${e.message}`);
+          Logger.error(`Error fetching friends for user ${userId}: ${error.message}`);
           return [];
-        });
       }
-      
-      state.setCachedItem(cacheKey, result);
-      return result;
-    } catch (error) {
-      Logger.error(`Error fetching friends for user ${userId}: ${error.message}`);
-      return [];
-    }
   },
 
   async getFollowerCount(userId) {
@@ -741,7 +751,6 @@ const AltDetectorService = {
         Logger.error(`Chart URL too long (${chartUrl.length} chars) for ${username}`);
         return null;
       }
-      Logger.log(`Generated chart for ${username}: ${chartUrl.length} chars`);
       return chartUrl;
     } catch (error) {
       Logger.error(`Failed to generate chart for ${username}: ${error.message}`);
@@ -892,134 +901,137 @@ const EmbedHelper = {
     return `${days}d ${hours}h ${minutes}m`;
   },
 
-  createDynamicEmbed(robloxInfo, rankInEV, affiliatedGroups, friends, page = 1) {
-    const embed = new EmbedBuilder()
-      .setTitle(`🔎 ${robloxInfo.displayName} (@${robloxInfo.username})`)
-      .setURL(robloxInfo.profileUrl)
-      .setColor(robloxInfo.statusColor)
-      .setThumbnail(robloxInfo.avatarUrl || null)
-      .addFields(
-        { 
-          name: '🌐 Status', 
-          value: `${robloxInfo.statusEmoji} ${robloxInfo.lastLocation}`, 
-          inline: true 
-        }
-      );
+    createDynamicEmbed(robloxInfo, rankInEV, affiliatedGroups, friends, page = 1) {
+      const embed = new EmbedBuilder()
+          .setTitle(`🔎 ${robloxInfo.displayName} (@${robloxInfo.username})`)
+          .setURL(robloxInfo.profileUrl)
+          .setColor(robloxInfo.statusColor)
+          .setThumbnail(robloxInfo.avatarUrl || null)
+          .addFields(
+              { 
+                  name: '🌐 Status', 
+                  value: `${robloxInfo.statusEmoji} ${robloxInfo.lastLocation}`, 
+                  inline: true 
+              }
+          );
 
-    const evStatus = rankInEV 
-      ? `✅ EV Member • **${rankInEV}**` 
-      : '❌ Not an EV Member';
-    
-    embed.addFields({ name: '🇩🇪 Eiserner Vorhang', value: evStatus, inline: true });
-
-    if (affiliatedGroups.length) {
-      const groupsByRole = {};
-      affiliatedGroups.forEach(g => {
-        if (!groupsByRole[g.role]) {
-          groupsByRole[g.role] = [];
-        }
-        groupsByRole[g.role].push(g.name);
-      });
-
-      let affiliationsText = '';
-      const roleEntries = Object.entries(groupsByRole);
+      const evStatus = rankInEV 
+          ? `✅ EV Member • **${rankInEV}**` 
+          : '❌ Not an EV Member';
       
-      if (roleEntries.length > 5) {
-        affiliationsText = roleEntries.slice(0, 4)
-          .map(([role, groups]) => {
-            if (groups.length > 3) {
-              return `**${role}**: ${groups.slice(0, 3).join(', ')} +${groups.length - 3} more`;
-            }
-            return `**${role}**: ${groups.join(', ')}`;
-          })
-          .join('\n');
+      embed.addFields({ name: '🇩🇪 Eiserner Vorhang', value: evStatus, inline: true });
+
+      if (affiliatedGroups.length) {
+          const groupsByRole = {};
+          affiliatedGroups.forEach(g => {
+              if (!groupsByRole[g.role]) {
+                  groupsByRole[g.role] = [];
+              }
+              groupsByRole[g.role].push(g.name);
+          });
+
+          let affiliationsText = '';
+          const roleEntries = Object.entries(groupsByRole);
           
-        const remainingRoles = roleEntries.length - 4;
-        affiliationsText += `\n\n*+${remainingRoles} more roles (${affiliatedGroups.length - roleEntries.slice(0, 4).flatMap(([_, groups]) => groups).length} groups)*`;
-      } else {
-        affiliationsText = roleEntries
-          .map(([role, groups]) => {
-            if (groups.length > 5) {
-              return `**${role}**: ${groups.slice(0, 5).join(', ')} +${groups.length - 5} more`;
-            }
-            return `**${role}**: ${groups.join(', ')}`;
-          })
-          .join('\n');
-      }
-
-      embed.addFields({ 
-        name: `📋 Other Affiliations (${affiliatedGroups.length})`, 
-        value: this.smartTruncate(affiliationsText, 1024) || 'No other notable affiliations', 
-        inline: false 
-      });
-    } else if (!rankInEV) {
-      embed.addFields({ 
-        name: '📋 Other Affiliations', 
-        value: 'No Notable Affiliations', 
-        inline: false 
-      });
-    }
-
-    embed.setFooter({ 
-      text: '⚠️ AI-Generated Information • May not be fully accurate!' 
-    });
-    
-    const totalPages = Math.ceil(friends.length / CONFIG.FRIENDS_PER_PAGE) || 1;
-    const startIdx = (page - 1) * CONFIG.FRIENDS_PER_PAGE;
-    const paginatedFriends = friends.slice(startIdx, startIdx + CONFIG.FRIENDS_PER_PAGE);
-
-    if (paginatedFriends.length) {
-      let friendsText = '';
-      
-      for (const f of paginatedFriends) {
-        const statusEmoji = f.isOnline ? '🟢' : '🔴';
-        
-        let groupInfo = '';
-        if (f.groups.length > 3) {
-          groupInfo = f.groups.slice(0, 3).map(g => `• ${g.name} (${g.role})`).join('\n');
-          groupInfo += `\n• *+${f.groups.length - 3} More Groups*`;
-        } else {
-          groupInfo = f.groups.map(g => `• ${g.name} (${g.role})`).join('\n');
-        }
-        
-        const friendText = `**${f.displayName}** (@${f.username}) ${statusEmoji}\n${groupInfo}`;
-        
-        if ((friendsText + '\n\n' + friendText).length > 1000) {
-          if (friendsText === '') {
-            friendsText = this.smartTruncate(friendText, 1000);
+          if (roleEntries.length > 5) {
+              affiliationsText = roleEntries.slice(0, 4)
+                  .map(([role, groups]) => {
+                      if (groups.length > 3) {
+                          return `**${role}**: ${groups.slice(0, 3).join(', ')} +${groups.length - 3} more`;
+                      }
+                      return `**${role}**: ${groups.join(', ')}`;
+                  })
+                  .join('\n');
+                  
+              const remainingRoles = roleEntries.length - 4;
+              affiliationsText += `\n\n*+${remainingRoles} more roles (${affiliatedGroups.length - roleEntries.slice(0, 4).flatMap(([_, groups]) => groups).length} groups)*`;
           } else {
-            friendsText += '\n\n*Some of the less important details have been hidden due to limitations.';
+              affiliationsText = roleEntries
+                  .map(([role, groups]) => {
+                      if (groups.length > 5) {
+                          return `**${role}**: ${groups.slice(0, 5).join(', ')} +${groups.length - 5} more`;
+                      }
+                      return `**${role}**: ${groups.join(', ')}`;
+                  })
+                  .join('\n');
           }
-          break;
-        }
-        
-        friendsText += (friendsText ? '\n\n' : '') + friendText;
-      }
-      
-      embed.addFields({ 
-        name: `👥 Notable Friends (${friends.length} Total)`, 
-        value: friendsText || 'No other notable friends', 
-        inline: false 
-      });
-      
-      if (totalPages > 1) {
-        embed.addFields({ 
-          name: 'Page Navigation', 
-          value: `Page ${page}/${totalPages}`, 
-          inline: true 
-        });
-      }
-    } else {
-      embed.addFields({ 
-        name: '👥 Notable Friends', 
-        value: 'No Notable Friends', 
-        inline: false 
-      });
-    }
 
-    embed.setTimestamp();
-    
-    return { embed, totalPages };
+          embed.addFields({ 
+              name: `📋 Other Affiliations (${affiliatedGroups.length})`, 
+              value: this.smartTruncate(affiliationsText, 1024) || 'No other notable affiliations', 
+              inline: false 
+          });
+      } else if (!rankInEV) {
+          embed.addFields({ 
+              name: '📋 Other Affiliations', 
+              value: 'No Notable Affiliations', 
+              inline: false 
+          });
+      }
+
+      embed.setFooter({ 
+          text: '⚠️ AI-Generated Information • May not be fully accurate!' 
+      });
+      
+      const totalPages = Math.ceil(friends.length / CONFIG.FRIENDS_PER_PAGE) || 1;
+      const startIdx = (page - 1) * CONFIG.FRIENDS_PER_PAGE;
+      const paginatedFriends = friends.slice(startIdx, startIdx + CONFIG.FRIENDS_PER_PAGE);
+
+      if (paginatedFriends.length) {
+          let friendsText = '';
+          
+          for (const f of paginatedFriends) {
+              const statusEmoji = f.isOnline ? '🟢' : '🔴';
+              
+              let groupInfo = '';
+              if (f.groups.length > 3) {
+                  groupInfo = f.groups.slice(0, 3)
+                      .map(g => `• ${g.name} (${g.role})`)
+                      .join('\n');
+                  groupInfo += `\n• *+${f.groups.length - 3} More Groups*`;
+              } else {
+                  groupInfo = f.groups.map(g => `• ${g.name} (${g.role})`)
+                      .join('\n');
+              }
+              
+              const friendText = `(@${f.username}) ${statusEmoji}\n${groupInfo}`;
+              
+              if ((friendsText + '\n\n' + friendText).length > 1000) {
+                  if (friendsText === '') {
+                      friendsText = this.smartTruncate(friendText, 1000);
+                  } else {
+                      friendsText += '\n\n*Some friends omitted due to length limitations*';
+                  }
+                  break;
+              }
+              
+              friendsText += (friendsText ? '\n\n' : '') + friendText;
+          }
+          
+          embed.addFields({ 
+              name: `👥 Notable Friends (${friends.length} Total)`, 
+              value: friendsText || 'No notable friends found', 
+              inline: false 
+          });
+          
+          if (totalPages > 1) {
+              embed.addFields({ 
+                  name: 'Page Navigation', 
+                  value: `Page ${page}/${totalPages}`, 
+                  inline: true 
+              });
+          }
+      } else {
+          embed.addFields({ 
+              name: '👥 Notable Friends', 
+              value: 'No Notable Friends', 
+              inline: false 
+          });
+      }
+
+      embed.setTimestamp();
+      
+      return { embed, totalPages };
   },
   
   smartTruncate(text, maxLength = 1024) {
@@ -1063,14 +1075,6 @@ const EmbedHelper = {
     return result;
   }
 };
-
-function formatDescription(description) {
-  if (!description) return null;
-  if (description.length > 250) {
-    return description.substring(0, 250) + '...';
-  }
-  return description;
-}
 
 function stripIndent(strings, ...values) {
   const result = strings.reduce((acc, str, i) => acc + str + (values[i] || ''), '');
@@ -1270,11 +1274,11 @@ const CommandHandler = {
           value: '**🤔 How can I trust you?**\n' +
                  '[I’m EV approved!](https://media.discordapp.net/attachments/1345418675418693703/1346590215325618216/image.png?ex=67d1f7dd&is=67d0a65d&hm=3749aef1eccf0931336d26cb42ede8e12b3925b25bf1a523cd6f7b03760c1060&=&format=webp&quality=lossless&width=454&height=371)\n\n' +
                  '**📃 What do you log?**\n' +
-                 'I take security and privacy seriously, we only log the essentials, **nothing that could ever reveal who our users are**. \n\n' +
+                 'I take security and privacy seriously, we only log the essentials, **nothing that could ever reveal who my users are**. \n\n' +
                  '**👾 Who created you?**\n' +
                  'I was created by [Sina](https://discord.com/users/751648406363176960), source is available on [GitHub](https://github.com/enterausernameasterisk/Ein-Berliner).\n\n' +
                  '**💭 Why?**\n' +
-                 'Because Ein Berliner makes OSINT (*Open Source Intel*) easy—no headaches, no unnecessary steps, just quick and convenient info scraping.',
+                 'Because Ein Berliner makes OSINT *(Open Source Intel)* easy—no headaches, no unnecessary steps, just quick and convenient info scraping.',
           inline: false
         }
       )
@@ -1305,13 +1309,12 @@ const CommandHandler = {
     const idType = interaction.options.getString('id_type') || 'place';
   
     try {
-      Logger.log(`Fetching game data for: ${gameId} (Type: ${idType})`);
-      await interaction.editReply({ content: `⏳ Looking up **${gameId}**.. (1/5)` });
+      await interaction.editReply({ content: `⏳ Looking up **${gameId}**.. (**1/5**)` });
   
       let universeId = gameId;
   
       if (idType === 'place') {
-        await interaction.editReply({ content: `⏳ Converting **${gameId}**.. (1.5/5)` });
+        await interaction.editReply({ content: `⏳ Converting **${gameId}**.. (**1.5/5**)` });
         const placeResponse = await fetch(`https://apis.roblox.com/universes/v1/places/${gameId}/universe`);
         if (!placeResponse.ok) {
           Logger.error(`Place-to-universe API failed with status: ${placeResponse.status} - ${placeResponse.statusText}`);
@@ -1323,9 +1326,9 @@ const CommandHandler = {
         if (!universeId) {
           return interaction.editReply(`❌ **Faced an exception:** ${gameId}** couldn't be converted.**`);
         }
-        await interaction.editReply({ content: `♻️ Converted to **${universeId}**, now checking it out.. (2/5)` });
+        await interaction.editReply({ content: `♻️ Converted to **${universeId}**, now checking it out.. (**2/5**)` });
       } else {
-        await interaction.editReply({ content: `⏳ Using **${gameId}**, now checking it out.. (2/5)` });
+        await interaction.editReply({ content: `⏳ Using **${gameId}**, now checking it out.. (**2/5**)` });
       }
   
 
@@ -1341,9 +1344,9 @@ const CommandHandler = {
       }
   
       const game = gameData.data[0];
-      await interaction.editReply({ content: `🔭 Found **${game.name}**, Now gathering data.. (3/5)` });
+      await interaction.editReply({ content: `🔭 Found **${game.name}**, Now gathering data.. (**3/5**)` });
   
-      await interaction.editReply({ content: `⏳ Fetching the data we collected on **${game.name}**.. (4/5)` });
+      await interaction.editReply({ content: `⏳ Fetching the data we collected on **${game.name}**.. (**4/5**)` });
       const [mediaResponse, badgesResponse, socialLinksResponse, votesResponse] = await Promise.all([
         fetch(`https://games.roblox.com/v1/games/${universeId}/media`),
         fetch(`https://badges.roblox.com/v1/universes/${universeId}/badges?limit=5&sortOrder=Asc`),
@@ -1363,7 +1366,7 @@ const CommandHandler = {
       if (!socialLinksResponse.ok) Logger.warn(`Failed to fetch social links for game ${universeId}: ${socialLinksResponse.status}`);
       if (!votesResponse.ok) Logger.warn(`Failed to fetch votes for game ${universeId}: ${votesResponse.status}`);
   
-      await interaction.editReply({ content: `⏳ Processing **${game.name}**.. (5/5)` });
+      await interaction.editReply({ content: `⏳ Processing **${game.name}**.. (**5/5**)` });
   
       const creatorInfo = this.processCreatorInfo(game.creator);
       const voteInfo = this.processVoteInfo(votesData);
@@ -1806,6 +1809,6 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(process.env.DISCORD_TOKEN).catch(error => {
-  Logger.log(`Couldn't log in: ${error.message}`);
+  Logger.error(`Couldn't log in: ${error.message}`);
   process.exit(1);
 });
