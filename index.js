@@ -13,7 +13,7 @@ const CONFIG = {
   API_TIMEOUT: 12000,
   FRIENDS_PER_PAGE: 3,
   CACHE_TTL: 300000,
-  EISERNER_GROUP_ID: 32441040,
+  EV_GROUP_ID: 32441040,
   NOTABLE_GROUP_IDS: [
     34039115, 34039523, 34039531, 34039535, 33867332, 33498997, 35662881, 32458845, 33649003,
     33261877, 33081269, 32720033, 32458556, 32458662, 32471205, 32720151, 33505741, 34960102,
@@ -892,7 +892,7 @@ const EmbedHelper = {
     return `${days}d ${hours}h ${minutes}m`;
   },
 
-  createDynamicEmbed(robloxInfo, rankInEiserner, affiliatedGroups, friends, page = 1) {
+  createDynamicEmbed(robloxInfo, rankInEV, affiliatedGroups, friends, page = 1) {
     const embed = new EmbedBuilder()
       .setTitle(`🔎 ${robloxInfo.displayName} (@${robloxInfo.username})`)
       .setURL(robloxInfo.profileUrl)
@@ -906,8 +906,8 @@ const EmbedHelper = {
         }
       );
 
-    const evStatus = rankInEiserner 
-      ? `✅ EV Member • **${rankInEiserner}**` 
+    const evStatus = rankInEV 
+      ? `✅ EV Member • **${rankInEV}**` 
       : '❌ Not an EV Member';
     
     embed.addFields({ name: '🇩🇪 Eiserner Vorhang', value: evStatus, inline: true });
@@ -952,7 +952,7 @@ const EmbedHelper = {
         value: this.smartTruncate(affiliationsText, 1024) || 'No other notable affiliations', 
         inline: false 
       });
-    } else if (!rankInEiserner) {
+    } else if (!rankInEV) {
       embed.addFields({ 
         name: '📋 Other Affiliations', 
         value: 'No Notable Affiliations', 
@@ -1181,7 +1181,7 @@ const CommandHandler = {
       await interaction.editReply({ content: `⏳ Found em, fetching **${robloxUsername}**'s groups.. (**2/4**)` });
       
       const userGroups = await RobloxService.getUserGroups(robloxInfo.userId);
-      const rankInEiserner = userGroups.find(g => g.group.id === CONFIG.EISERNER_GROUP_ID)?.role.name || null;
+      const rankInEV = userGroups.find(g => g.group.id === CONFIG.EV_GROUP_ID)?.role.name || null;
       
       const affiliatedGroups = CONFIG.NOTABLE_GROUP_IDS
         .filter(id => userGroups.some(g => g.group.id === id))
@@ -1215,7 +1215,7 @@ const CommandHandler = {
           },
           { 
             name: '🇩🇪 Eiserner Vorhang', 
-            value: rankInEiserner ? `✅ EV Member • **${rankInEiserner}**` : '❌ Not an EV Member', 
+            value: rankInEV ? `✅ EV Member • **${rankInEV}**` : '❌ Not an EV Member', 
             inline: true 
           }
         );
@@ -1237,7 +1237,7 @@ const CommandHandler = {
       
       const { embed, totalPages } = EmbedHelper.createDynamicEmbed(
         robloxInfo, 
-        rankInEiserner, 
+        rankInEV, 
         affiliatedGroups, 
         friends
       );
@@ -1640,7 +1640,7 @@ const ButtonHandler = {
           RobloxService.getUserGroups(robloxInfo.userId)
         ]);
         
-        const rankInEiserner = userGroups.find(g => g.group.id === CONFIG.EISERNER_GROUP_ID)?.role.name || null;
+        const rankInEV = userGroups.find(g => g.group.id === CONFIG.EV_GROUP_ID)?.role.name || null;
         
         const affiliatedGroups = CONFIG.NOTABLE_GROUP_IDS
           .filter(id => userGroups.some(g => g.group.id === id))
@@ -1655,7 +1655,7 @@ const ButtonHandler = {
         
         const { embed, totalPages } = EmbedHelper.createDynamicEmbed(
           robloxInfo, 
-          rankInEiserner, 
+          rankInEV, 
           affiliatedGroups, 
           friends, 
           newPage
